@@ -1,0 +1,7 @@
+# ── Notebook 01 · Legal Inventory Exploration ────────────────────────────────
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+pandas>=2.0.0
+
+# ── Notebook 02 · Morelos Local PDF Exploration ──────────────────────────────
+pdfplumber>=0.10.0
