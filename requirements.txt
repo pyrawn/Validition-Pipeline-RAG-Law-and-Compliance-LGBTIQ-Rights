@@ -1,7 +1,24 @@
-# ── Notebook 01 · Legal Inventory Exploration ────────────────────────────────
-requests>=2.31.0
-beautifulsoup4>=4.12.0
-pandas>=2.0.0
+# ── Airflow ───────────────────────────────────────────────────────────────────
+apache-airflow==2.9.1
 
-# ── Notebook 02 · Morelos Local PDF Exploration ──────────────────────────────
-pdfplumber>=0.10.0
+# ── PDF extraction ────────────────────────────────────────────────────────────
+pdfplumber
+
+# ── Database / config ─────────────────────────────────────────────────────────
+pymongo
+pyyaml
+python-dotenv
+
+# ── Data processing ───────────────────────────────────────────────────────────
+pandas
+
+# ── RAG / LLM ─────────────────────────────────────────────────────────────────
+llama-index
+llama-index-llms-anthropic
+
+# ── Dashboard (Streamlit service) ─────────────────────────────────────────────
+streamlit
+plotly
+folium
+streamlit-folium
+altair
