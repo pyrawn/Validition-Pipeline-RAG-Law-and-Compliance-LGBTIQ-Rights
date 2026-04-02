@@ -1,4 +1,3 @@
----
 # ── Apache Airflow + Streamlit · docker-compose.yml ──────────────────────────
 # MongoDB runs on Atlas — no local mongo service.
 # All services load secrets from .env at the project root.
@@ -98,20 +97,19 @@ services:
   # ── Streamlit dashboard ─────────────────────────────────────────────────────
   streamlit:
     image: python:3.11-slim
-    env_file:
-      - .env
-    working_dir: /app
     volumes:
       - ./app:/app
-      - ./config:/app/config
-      - ./.env:/app/.env
+      - ./requirements.txt:/requirements.txt
+    working_dir: /app
+    command: >
+      bash -c "pip install streamlit plotly folium streamlit-folium
+      altair pymongo pyyaml python-dotenv &&
+      streamlit run main.py --server.address=0.0.0.0 --server.port=8501"
     ports:
       - "8501:8501"
-    command: >
-      bash -c "pip install --no-cache-dir
-        streamlit plotly folium streamlit-folium altair pymongo pyyaml python-dotenv
-        && streamlit run /app/main.py --server.address=0.0.0.0"
-    restart: always
+    env_file:
+      - .env
+    restart: on-failure
 
 volumes:
   postgres-db-volume:

@@ -1,20 +1,29 @@
 # ── Airflow ───────────────────────────────────────────────────────────────────
 apache-airflow==2.9.1
 
-# ── PDF extraction ────────────────────────────────────────────────────────────
+# ── Web scraping (extract task) ───────────────────────────────────────────────
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# ── Document extraction ───────────────────────────────────────────────────────
 pdfplumber
+
+# ── Data processing ───────────────────────────────────────────────────────────
+pandas
+
+# ── Vector store, embeddings & LLM orchestration ─────────────────────────────
+langchain
+langchain-anthropic
+langchain-community
+langchain-text-splitters
+langgraph
+sentence-transformers
+faiss-cpu
 
 # ── Database / config ─────────────────────────────────────────────────────────
 pymongo
 pyyaml
 python-dotenv
-
-# ── Data processing ───────────────────────────────────────────────────────────
-pandas
-
-# ── RAG / LLM ─────────────────────────────────────────────────────────────────
-llama-index
-llama-index-llms-anthropic
 
 # ── Dashboard (Streamlit service) ─────────────────────────────────────────────
 streamlit

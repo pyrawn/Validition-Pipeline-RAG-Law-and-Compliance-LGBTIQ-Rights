@@ -214,3 +214,5 @@ config/mongo.yaml
 data/
 
 .yaml
+
+scripts/.deps/
