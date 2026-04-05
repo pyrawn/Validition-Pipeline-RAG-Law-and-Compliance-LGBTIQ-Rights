@@ -101,12 +101,14 @@ services:
     image: python:3.11-slim
     volumes:
       - ./app:/app
-      - ./requirements.txt:/requirements.txt
+      - ./config:/config
+      - ./data:/data
+      - ./.env:/app/.env
     working_dir: /app
     command: >
       bash -c "pip install streamlit plotly folium streamlit-folium
       altair pymongo pyyaml python-dotenv &&
-      streamlit run main.py --server.address=0.0.0.0 --server.port=8501"
+      python -m streamlit run main.py --server.address=0.0.0.0 --server.port=8501"
     ports:
       - "8501:8501"
     env_file:
