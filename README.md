@@ -1,4 +1,4 @@
-# Mexico LGBTIQ+ Rights Compliance Pipeline
+# Mexico LGBTIQ+ Rights Compliance Pipeline 🏳️‍🌈
 
 A RAG-based NLP pipeline for automated legal gap analysis of Mexican state laws on LGBTIQ+ rights. The system evaluates compliance across all 32 Mexican states against six structured legal markers (L1–L3, C1–C3) using pdfplumber, LangGraph, and Claude, returning structured scores, justifications, and cited articles per state. Results are stored in MongoDB Atlas and visualized through an interactive Streamlit dashboard.
 
