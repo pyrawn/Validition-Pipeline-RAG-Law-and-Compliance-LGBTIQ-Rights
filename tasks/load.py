@@ -26,6 +26,8 @@ from dotenv import load_dotenv
 from pymongo import MongoClient, UpdateOne
 from pymongo.errors import PyMongoError
 
+from tasks.extract import STATES
+
 log = logging.getLogger(__name__)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -118,9 +120,17 @@ def load_results(ti) -> None:
     """
     load_dotenv(PROJECT_ROOT / ".env", override=False)
 
-    records: List[Dict] = ti.xcom_pull(task_ids="transform_to_scores")
+    # Pull per-state lists from all transform tasks and flatten into one list.
+    transform_task_ids = [f"transform_{s.replace(' ', '_')}" for s in STATES]
+    xcom_results = ti.xcom_pull(task_ids=transform_task_ids)
+
+    records: List[Dict] = []
+    for result in (xcom_results or []):
+        if result:
+            records.extend(result)
+
     if not records:
-        raise ValueError("XCom returned empty records from transform_to_scores.")
+        raise ValueError("XCom returned empty records from all transform tasks.")
 
     execution_date = ti.execution_date.strftime("%Y-%m-%d")
     log.info("Loading %d records for execution_date=%s", len(records), execution_date)

@@ -34,6 +34,43 @@ INVENTORY_CSV = PROJECT_ROOT / "data" / "output" / "legal_inventory.csv"
 MORELOS_DIR   = PROJECT_ROOT / "data" / "morelos"
 RAW_DIR       = PROJECT_ROOT / "data" / "raw"
 
+# ── State list ────────────────────────────────────────────────────────────────
+# Must match the values in the `state` column of legal_inventory.csv exactly.
+STATES: List[str] = [
+    "Aguascalientes",
+    "Baja California",
+    "Baja California Sur",
+    "Campeche",
+    "Chiapas",
+    "Chihuahua",
+    "Ciudad de Mexico",
+    "Coahuila",
+    "Colima",
+    "Durango",
+    "Guanajuato",
+    "Guerrero",
+    "Hidalgo",
+    "Jalisco",
+    "Estado de Mexico",
+    "Michoacan",
+    "Morelos",
+    "Nayarit",
+    "Nuevo Leon",
+    "Oaxaca",
+    "Puebla",
+    "Queretaro",
+    "Quintana Roo",
+    "San Luis Potosi",
+    "Sinaloa",
+    "Sonora",
+    "Tabasco",
+    "Tamaulipas",
+    "Tlaxcala",
+    "Veracruz",
+    "Yucatan",
+    "Zacatecas",
+]
+
 # ── Pilot mode ────────────────────────────────────────────────────────────────
 # Set to True to process only Morelos (local PDFs) for pipeline testing.
 # Set to False for full 32-state production run.
@@ -229,27 +266,38 @@ def _extract_morelos_local() -> List[Tuple[str, str]]:
     return results
 
 
-# ── Airflow callable ──────────────────────────────────────────────────────────
+# ── Airflow callables ─────────────────────────────────────────────────────────
 
-def extract_pdfs() -> Dict[str, List[Tuple[str, str]]]:
+def extract_state(state_name: str) -> Dict[str, List[str]]:
     """
-    Airflow task callable — entry point for the extract step.
+    Airflow task callable — extract documents for a single state.
 
-    Reads data/output/legal_inventory.csv for the 31-state Orden Jurídico
-    inventory, resolves each fichaOrdenamiento.php URL to a direct document
-    link, extracts text with Docling, and writes .txt files to data/raw/.
+    Called once per state by the parallel extract tasks in the DAG.
+    Morelos uses local PDFs from data/morelos/; all other states read from
+    legal_inventory.csv and resolve URLs via ordenjuridico.gob.mx.
 
-    Morelos fallback PDFs (data/morelos/) are processed separately with
-    Docling reading directly from local paths.
+    In PILOT_MODE, only Morelos produces real output; all other states
+    return an empty list immediately without hitting the network.
 
     Returns
     -------
     dict
-        Mapping of state_name -> list of (file_name, extracted_text) tuples.
-        Passed to the transform task via XCom.
+        {state_name: [absolute_file_path_strings]}
+        Passed to the transform task via XCom (file paths only, no text).
     """
     load_dotenv(PROJECT_ROOT / ".env", override=False)
 
+    # ── Pilot mode: skip non-Morelos states ───────────────────────────────────
+    if PILOT_MODE and state_name.strip().lower() != "morelos":
+        log.info("PILOT_MODE=True — skipping %s", state_name)
+        return {state_name: []}
+
+    # ── Morelos: read local PDFs ───────────────────────────────────────────────
+    if state_name.strip().lower() == "morelos":
+        tuples = _extract_morelos_local()
+        return {"Morelos": [fp for fp, _ in tuples]}
+
+    # ── All other states: read from inventory CSV ─────────────────────────────
     if not INVENTORY_CSV.exists():
         raise FileNotFoundError(
             f"Inventory CSV not found: {INVENTORY_CSV}\n"
@@ -257,28 +305,48 @@ def extract_pdfs() -> Dict[str, List[Tuple[str, str]]]:
         )
 
     inventory = pd.read_csv(INVENTORY_CSV, encoding="utf-8-sig")
-    log.info("Inventory loaded: %d rows, %d states", len(inventory), inventory["state"].nunique())
+    group = inventory[
+        inventory["state"].str.strip().str.lower() == state_name.strip().lower()
+    ]
 
-    all_results: Dict[str, List[Tuple[str, str]]] = {}
+    if group.empty:
+        log.warning("[%s] No rows found in inventory — check that the state name matches the CSV exactly.", state_name)
+        return {state_name: []}
 
-    # ── 31-state inventory ────────────────────────────────────────────────────
-    if not PILOT_MODE:
-        for state, group in inventory.groupby("state"):
-            if str(state).strip().lower() == "morelos":
-                continue  # handled separately below
-            all_results[str(state)] = _extract_state_from_inventory(str(state), group)
-    else:
-        log.info("PILOT_MODE=True — skipping inventory states, processing Morelos only.")
+    tuples = _extract_state_from_inventory(state_name, group)
+    return {state_name: [fp for fp, _ in tuples]}
 
-    # ── Morelos local PDFs ────────────────────────────────────────────────────
-    all_results["Morelos"] = _extract_morelos_local()
 
-    total_docs = sum(len(v) for v in all_results.values())
-    log.info("Extraction complete: %d states, %d documents total", len(all_results), total_docs)
+def extract_all_states() -> Dict[str, List[str]]:
+    """
+    Airflow task callable — extract documents for all 32 states sequentially.
 
-    # Return only file paths — not text content — to stay within XCom's 48 KB limit.
-    # The transform task reads the .txt files directly from disk using these paths.
-    return {
-        state: [file_path for file_path, _ in tuples]
-        for state, tuples in all_results.items()
-    }
+    Iterates over STATES, calling extract_state() for each one, and merges
+    the results into a single dict.  Pool-based concurrency is enforced at
+    the Airflow task level (pool="extract_pool"), so this function itself
+    runs single-threaded.
+
+    Returns
+    -------
+    dict
+        {state_name: [absolute_file_path_strings]} for all states.
+    """
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+
+    all_results: Dict[str, List[str]] = {}
+    for state in STATES:
+        result = extract_state(state)
+        all_results.update(result)
+
+    total = sum(len(v) for v in all_results.values())
+    log.info("extract_all_states complete: %d states, %d documents", len(all_results), total)
+    return all_results
+
+
+def extract_pdfs() -> Dict[str, List[str]]:
+    """
+    Morelos-only fallback callable (kept for ad-hoc use / backward compat).
+    """
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+    tuples = _extract_morelos_local()
+    return {"Morelos": [fp for fp, _ in tuples]}

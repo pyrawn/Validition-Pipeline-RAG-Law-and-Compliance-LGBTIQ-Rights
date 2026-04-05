@@ -419,92 +419,123 @@ def _build_vector_store(texts: List[str]) -> Any:
     return store.as_retriever(search_kwargs={"k": TOP_K})
 
 
-# ── Airflow callable ──────────────────────────────────────────────────────────
+# ── Shared scoring logic ──────────────────────────────────────────────────────
 
-def transform_to_scores(ti) -> List[Dict]:
+def _score_single_state(state_name: str, file_paths: List[str]) -> List[Dict]:
     """
-    Airflow task callable — entry point for the transform step.
+    Build a FAISS vector store from the given file paths and run the LangGraph
+    devil's advocate graph for all 6 markers.
 
-    Pulls a lightweight file-path index from XCom (task_id='extract_pdfs'),
-    reads each .txt file directly from disk, builds a per-state FAISS vector
-    store, then runs the LangGraph devil's advocate graph for each of the 6
-    markers.  Text content is never stored in XCom to stay within the 48 KB
-    limit.
-
-    Returns
-    -------
-    list of dict
-        192 validated records (32 states × 6 markers), each conforming to
-        ComplianceRecord.  Passed to the load task via XCom.
+    Returns a list of up to 6 ComplianceRecord dicts, or empty list if no
+    usable text was found.
     """
-    load_dotenv(PROJECT_ROOT / ".env", override=False)
+    texts = []
+    for fp in file_paths:
+        p = pathlib.Path(fp)
+        if p.exists():
+            content = p.read_text(encoding="utf-8").strip()
+            if content:
+                texts.append(content)
+        else:
+            log.warning("[%s] File not found, skipping: %s", state_name, fp)
 
-    # XCom carries only file paths (lightweight index), not text content.
-    file_index: Dict[str, List[str]] = ti.xcom_pull(task_ids="extract_pdfs")
-    if not file_index:
-        raise ValueError("XCom returned empty file index from extract_pdfs.")
+    if not texts:
+        log.warning("[%s] No usable text — all documents were empty. Skipping.", state_name)
+        return []
+
+    log.info("[%s] Building vector store from %d documents.", state_name, len(texts))
+    try:
+        retriever = _build_vector_store(texts)
+    except ValueError as exc:
+        log.error("[%s] Vector store failed: %s", state_name, exc)
+        return []
 
     graph   = _build_graph()
     records: List[Dict] = []
 
-    for state_name, file_paths in file_index.items():
-        texts = []
-        for fp in file_paths:
-            p = pathlib.Path(fp)
-            if p.exists():
-                content = p.read_text(encoding="utf-8").strip()
-                if content:
-                    texts.append(content)
-            else:
-                log.warning("[%s] File not found, skipping: %s", state_name, fp)
-        if not texts:
-            log.warning("[%s] No usable text — all documents were empty. Skipping.", state_name)
-            continue
+    for marker_key, marker_meta in MARKERS.items():
+        initial_state: GraphState = {
+            "state_name":    state_name,
+            "marker_key":    marker_key,
+            "marker_meta":   marker_meta,
+            "retriever":     retriever,
+            "chunks":        [],
+            "challenges":    [],
+            "rebuttals":     [],
+            "score":         0,
+            "justification": "",
+            "cited_article": "N/A",
+        }
 
-        log.info("[%s] Building vector store from %d documents.", state_name, len(texts))
         try:
-            retriever = _build_vector_store(texts)
-        except ValueError as exc:
-            log.error("[%s] Vector store failed: %s", state_name, exc)
-            continue
+            final_state = graph.invoke(initial_state)
+            record = ComplianceRecord(
+                state         = state_name,
+                marker        = marker_key,
+                score         = final_state["score"],
+                justification = final_state["justification"],
+                cited_article = final_state["cited_article"],
+            )
+            records.append(record.model_dump())
+        except Exception as exc:
+            log.error("[%s] Graph failed for marker=%s: %s", state_name, marker_key, exc)
+            records.append(ComplianceRecord(
+                state         = state_name,
+                marker        = marker_key,
+                score         = 0,
+                justification = f"Pipeline error: {exc}",
+                cited_article = "N/A",
+            ).model_dump())
 
-        for marker_key, marker_meta in MARKERS.items():
-            initial_state: GraphState = {
-                "state_name":   state_name,
-                "marker_key":   marker_key,
-                "marker_meta":  marker_meta,
-                "retriever":    retriever,
-                "chunks":       [],
-                "challenges":   [],
-                "rebuttals":    [],
-                "score":        0,
-                "justification": "",
-                "cited_article": "N/A",
-            }
+    return records
 
-            try:
-                final_state = graph.invoke(initial_state)
-                record = ComplianceRecord(
-                    state          = state_name,
-                    marker         = marker_key,
-                    score          = final_state["score"],
-                    justification  = final_state["justification"],
-                    cited_article  = final_state["cited_article"],
-                )
-                records.append(record.model_dump())
-            except Exception as exc:
-                log.error(
-                    "[%s] Graph failed for marker=%s: %s",
-                    state_name, marker_key, exc,
-                )
-                # Emit a score=0 record so the state is not silently dropped
-                records.append(ComplianceRecord(
-                    state         = state_name,
-                    marker        = marker_key,
-                    score         = 0,
-                    justification = f"Pipeline error: {exc}",
-                    cited_article = "N/A",
-                ).model_dump())
 
-    log.info("Transform complete: %d records produced.", len(records))
+# ── Airflow callables ─────────────────────────────────────────────────────────
+
+def transform_state(state_name: str, ti) -> List[Dict]:
+    """
+    Airflow task callable — score a single state against all 6 markers.
+
+    Pulls the full file-path index from XCom (task_id='extract_all_states'),
+    selects the paths for this state, builds a FAISS vector store, and runs
+    the LangGraph devil's advocate graph for each marker.
+
+    Returns
+    -------
+    list of dict
+        Up to 6 ComplianceRecord dicts (one per marker).
+        Passed to load_results via XCom.
+    """
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+
+    file_index: Dict[str, List[str]] = ti.xcom_pull(task_ids="extract_all_states")
+    if not file_index:
+        raise ValueError("XCom returned empty file index from extract_all_states.")
+
+    file_paths = file_index.get(state_name, [])
+    if not file_paths:
+        log.warning("[%s] No file paths found in XCom — returning empty.", state_name)
+        return []
+
+    records = _score_single_state(state_name, file_paths)
+    log.info("[%s] transform_state complete: %d records", state_name, len(records))
+    return records
+
+
+def transform_to_scores(ti) -> List[Dict]:
+    """
+    Legacy single-task callable — scores all states sequentially.
+    Kept for ad-hoc use; the main pipeline uses transform_state() per state.
+    """
+    load_dotenv(PROJECT_ROOT / ".env", override=False)
+
+    file_index: Dict[str, List[str]] = ti.xcom_pull(task_ids="extract_all_states")
+    if not file_index:
+        raise ValueError("XCom returned empty file index from extract_all_states.")
+
+    records: List[Dict] = []
+    for state_name, file_paths in file_index.items():
+        records.extend(_score_single_state(state_name, file_paths))
+
+    log.info("transform_to_scores complete: %d records produced.", len(records))
     return records

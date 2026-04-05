@@ -60,6 +60,8 @@ services:
           --lastname User \
           --role Admin \
           --email ${AIRFLOW_ADMIN_EMAIL} || true
+        airflow pools set extract_pool 3 "Limits concurrent state extractions to avoid OOM"
+        airflow pools set transform_pool 3 "Limits concurrent state transforms to avoid OOM"
     restart: on-failure
 
   # ── Airflow webserver ───────────────────────────────────────────────────────
